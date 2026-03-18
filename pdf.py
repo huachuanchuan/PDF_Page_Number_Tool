@@ -89,6 +89,13 @@ DEFAULT_PAGE_NUMBER_FONT = "微软雅黑 (Microsoft YaHei)"
 DEFAULT_TOC_TITLE_FONT = "微软雅黑 (Microsoft YaHei)"
 DEFAULT_TOC_BODY_FONT = "宋体 (SimSun)"
 
+STANDARD_TOC_TITLE = "（七）项目经费支撑材料"
+STANDARD_TOC_TITLE_FONT = "黑体 (SimHei)"
+STANDARD_TOC_BODY_FONT_ZH = "黑体 (SimHei)"
+STANDARD_TOC_BODY_FONT_EN = "Times New Roman"
+STANDARD_TOC_TITLE_SIZE = 16
+STANDARD_TOC_BODY_SIZE = 11
+
 VALID_ROMAN_RE = re.compile(
     r"^M{0,4}(CM|CD|D?C{0,3})"
     r"(XC|XL|L?X{0,3})"
@@ -190,27 +197,46 @@ def truncate_text_to_width(text: str, max_width: float, font_size: int, font_nam
     return ellipsis
 
 
+def normalize_toc_item_text(item_text: str) -> str:
+    clean = re.sub(r"\s+", " ", item_text.strip())
+    return clean.replace("\u3000", " ").strip()
+
+
+def normalize_toc_page_text(page_text: str) -> str:
+    page_no = parse_page_number(page_text)
+    if page_no is None:
+        raise ValueError(f"目录页码无效: {page_text}")
+    return str(page_no)
+
+
+def choose_toc_body_font_choice(item_text: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_.\- ]+", item_text) is not None:
+        return STANDARD_TOC_BODY_FONT_EN
+    return STANDARD_TOC_BODY_FONT_ZH
+
+
 def draw_dotted_leader(
     page: Any,
     start_x: float,
     end_x: float,
     baseline_y: float,
     font_size: int,
+    font_name: str,
 ) -> None:
     if end_x <= start_x:
         return
 
-    step = max(1.55, font_size * 0.15)
-    radius = max(0.42, font_size * 0.062)
-    center_y = baseline_y - (font_size * 0.28)
+    dot_spacing = max(2.8, font_size * 0.30)
+    dot_radius = max(0.24, font_size * 0.034)
+    center_y = baseline_y - max(1.2, font_size * 0.22)
 
     shape = page.new_shape()
     x = start_x
     while x <= end_x:
-        shape.draw_circle(pymupdf.Point(x, center_y), radius)
-        x += step
+        shape.draw_circle(pymupdf.Point(x, center_y), dot_radius)
+        x += dot_spacing
 
-    shape.finish(color=(0, 0, 0), fill=(0, 0, 0), width=0.1)
+    shape.finish(color=(0, 0, 0), fill=(0, 0, 0), width=0.08)
     shape.commit()
 
 
@@ -223,20 +249,23 @@ def draw_toc_entry_line(
     right_x: float,
     font_size: int,
     font_name: str,
+    page_font_name: Optional[str] = None,
 ) -> None:
     clean_item = item_text.strip()
     clean_page = page_text.strip()
     if not clean_item or not clean_page:
         raise ValueError("目录项和页码都不能为空。")
 
-    page_width = measure_text_width(clean_page, font_size, font_name)
+    number_font_name = page_font_name or font_name
+
+    page_width = measure_text_width(clean_page, font_size, number_font_name)
     page_x = right_x - page_width
     if page_x <= left_x + (font_size * 3):
         raise ValueError("目录排版空间不足，请减小字号后重试。")
 
-    pre_dot_gap = max(1.2, font_size * 0.16)
-    post_dot_gap = max(0.2, font_size * 0.03)
-    reserve_for_dots = font_size * 12
+    pre_dot_gap = max(0.8, font_size * 0.08)
+    post_dot_gap = max(0.8, font_size * 0.08)
+    reserve_for_dots = max(font_size * 4.0, 30.0)
     max_item_width = page_x - left_x - pre_dot_gap - post_dot_gap - reserve_for_dots
     max_item_width = max(max_item_width, font_size * 4)
 
@@ -259,6 +288,7 @@ def draw_toc_entry_line(
         end_x=dots_end,
         baseline_y=y,
         font_size=font_size,
+        font_name=font_name,
     )
 
     # 页码右侧对齐到固定边界：不同位数也在同一列结束。
@@ -266,7 +296,7 @@ def draw_toc_entry_line(
         pymupdf.Point(page_x, y),
         clean_page,
         fontsize=font_size,
-        fontname=font_name,
+        fontname=number_font_name,
         color=(0, 0, 0),
     )
 
@@ -496,20 +526,23 @@ def prepend_toc_pages(
             page_width = 595.0
             page_height = 842.0
 
-        title_font_name, title_font_file = resolve_font_resource(title_font_choice, "toc_title")
-        body_font_name, body_font_file = resolve_font_resource(body_font_choice, "toc_body")
+        title_font_name, title_font_file = resolve_font_resource(STANDARD_TOC_TITLE_FONT, "toc_title")
+        body_font_name_zh, body_font_file_zh = resolve_font_resource(STANDARD_TOC_BODY_FONT_ZH, "toc_body_zh")
+        body_font_name_en, body_font_file_en = resolve_font_resource(STANDARD_TOC_BODY_FONT_EN, "toc_body_en")
 
-        left_margin = 56
-        right_margin = page_width - 56
-        title_y = 102
-        first_line_y = 170
-        continue_page_start_y = 96
-        bottom_margin = 74
-        line_height = max(body_font_size * 1.85, 24)
+        left_margin = 72
+        right_margin = page_width - 72
+        title_y = 106
+        first_line_y = 150
+        continue_page_start_y = 98
+        bottom_margin = 72
+        body_font_size = STANDARD_TOC_BODY_SIZE
+        title_font_size = STANDARD_TOC_TITLE_SIZE
+        line_height = max(body_font_size * 1.2, 13)
 
         entry_index = 0
         toc_page_count = 0
-        display_title = title.strip() or "目录"
+        display_title = normalize_toc_item_text(title) or STANDARD_TOC_TITLE
 
         while entry_index < len(entries):
             toc_page = toc_doc.new_page(width=page_width, height=page_height)
@@ -517,8 +550,10 @@ def prepend_toc_pages(
 
             if title_font_file:
                 toc_page.insert_font(fontname=title_font_name, fontfile=title_font_file)
-            if body_font_file:
-                toc_page.insert_font(fontname=body_font_name, fontfile=body_font_file)
+            if body_font_file_zh:
+                toc_page.insert_font(fontname=body_font_name_zh, fontfile=body_font_file_zh)
+            if body_font_file_en:
+                toc_page.insert_font(fontname=body_font_name_en, fontfile=body_font_file_en)
 
             if toc_page_count == 1:
                 title_width = measure_text_width(display_title, title_font_size, title_font_name)
@@ -536,6 +571,8 @@ def prepend_toc_pages(
 
             while entry_index < len(entries):
                 item_text, page_text = entries[entry_index]
+                line_font_choice = choose_toc_body_font_choice(item_text)
+                line_font_name = body_font_name_en if line_font_choice == STANDARD_TOC_BODY_FONT_EN else body_font_name_zh
                 draw_toc_entry_line(
                     page=toc_page,
                     y=y,
@@ -544,7 +581,8 @@ def prepend_toc_pages(
                     left_x=left_margin,
                     right_x=right_margin,
                     font_size=body_font_size,
-                    font_name=body_font_name,
+                    font_name=line_font_name,
+                    page_font_name=body_font_name_en,
                 )
 
                 y += line_height
@@ -814,11 +852,11 @@ class PDFWorkflowApp(tk.Tk):
 
         self.toc_source_var = tk.StringVar()
         self.toc_output_var = tk.StringVar()
-        self.toc_title_var = tk.StringVar(value="目录")
-        self.toc_title_font_var = tk.StringVar(value=DEFAULT_TOC_TITLE_FONT)
-        self.toc_title_size_var = tk.IntVar(value=24)
-        self.toc_body_font_var = tk.StringVar(value=DEFAULT_TOC_BODY_FONT)
-        self.toc_body_size_var = tk.IntVar(value=14)
+        self.toc_title_var = tk.StringVar()
+        self.toc_title_font_var = tk.StringVar(value=STANDARD_TOC_TITLE_FONT)
+        self.toc_title_size_var = tk.IntVar(value=STANDARD_TOC_TITLE_SIZE)
+        self.toc_body_font_var = tk.StringVar(value=STANDARD_TOC_BODY_FONT_ZH)
+        self.toc_body_size_var = tk.IntVar(value=STANDARD_TOC_BODY_SIZE)
         self.toc_item_var = tk.StringVar()
         self.toc_page_var = tk.StringVar()
 
@@ -865,6 +903,15 @@ class PDFWorkflowApp(tk.Tk):
             foreground="#4d5a73",
             font=("Microsoft YaHei UI", 9),
         )
+        style.configure(
+            "Clean.Horizontal.TProgressbar",
+            troughcolor="#dfe6f5",
+            background="#3b82f6",
+            lightcolor="#60a5fa",
+            darkcolor="#2563eb",
+            bordercolor="#dfe6f5",
+            thickness=8,
+        )
 
     def build_ui(self) -> None:
         wrapper = ttk.Frame(self, style="App.TFrame", padding=20)
@@ -902,7 +949,33 @@ class PDFWorkflowApp(tk.Tk):
         self.build_toc_tab()
         self.build_compress_tab()
 
-        ttk.Label(wrapper, textvariable=self.status_var, style="Status.TLabel").pack(anchor="w", pady=(10, 0))
+        status_group = ttk.Frame(wrapper, style="App.TFrame")
+        status_group.pack(fill="x", pady=(10, 0))
+
+        ttk.Label(status_group, textvariable=self.status_var, style="Status.TLabel").pack(anchor="w")
+        self.operation_progress_bar = ttk.Progressbar(
+            status_group,
+            style="Clean.Horizontal.TProgressbar",
+            mode="determinate",
+            maximum=100,
+            value=0,
+        )
+        self.operation_progress_bar.pack(fill="x", pady=(6, 0))
+
+    def set_operation_progress(self, value: float, status_text: Optional[str] = None) -> None:
+        if status_text is not None:
+            self.status_var.set(status_text)
+
+        safe_value = max(0.0, min(100.0, value))
+        self.operation_progress_bar.configure(mode="determinate")
+        self.operation_progress_bar.configure(value=safe_value)
+        self.update_idletasks()
+
+    def start_operation_progress(self, status_text: str) -> None:
+        self.set_operation_progress(6.0, status_text)
+
+    def stop_operation_progress(self) -> None:
+        self.set_operation_progress(0.0)
 
     def create_action_button(
         self,
@@ -1095,6 +1168,7 @@ class PDFWorkflowApp(tk.Tk):
         self.toc_source_var.set("")
         self.compress_source_var.set("")
         self.toc_output_var.set("")
+        self.toc_title_var.set("")
         self.compress_output_var.set("")
 
         self.clear_toc_entries()
@@ -1220,25 +1294,27 @@ class PDFWorkflowApp(tk.Tk):
         entries: List[Tuple[str, str]] = []
         current_page = 1
         for source in merge_sources:
-            entries.append((source.path.stem, str(current_page)))
+            entries.append((normalize_toc_item_text(source.path.stem), str(current_page)))
             current_page += source.page_count
         return entries
 
     def handle_merge_pdfs(self) -> None:
+        self.start_operation_progress("步骤 1 处理中：正在合并 PDF...")
         try:
             ordered_paths = self.get_merge_order_paths()
             if len(ordered_paths) < 1:
                 raise ValueError("请先选择至少一个 PDF 文件。")
+            self.set_operation_progress(18)
 
             merge_sources = [
                 MergeSource(path=path, page_count=get_pdf_page_count(path))
                 for path in ordered_paths
             ]
             merged_path = self.runtime_dir / "01_merged.pdf"
-            self.status_var.set("步骤 1 处理中：正在合并 PDF...")
-            self.update_idletasks()
+            self.set_operation_progress(36)
 
             merge_pdfs(ordered_paths, merged_path)
+            self.set_operation_progress(74)
             self.reference_pdf = ordered_paths[0]
             self.merged_pdf_path = merged_path
             self.numbered_pdf_path = None
@@ -1249,6 +1325,7 @@ class PDFWorkflowApp(tk.Tk):
             self.clear_toc_entries()
             for item_text, page_text in self.auto_toc_entries:
                 self.toc_tree.insert("", "end", values=(item_text, page_text))
+            self.toc_title_var.set("")
 
             self.number_source_var.set(str(merged_path))
             default_uncompressed = build_default_uncompressed_path(self.reference_pdf)
@@ -1259,6 +1336,7 @@ class PDFWorkflowApp(tk.Tk):
             self.notebook.tab(2, state="disabled")
             self.notebook.tab(3, state="disabled")
             self.notebook.select(1)
+            self.set_operation_progress(100)
 
             self.status_var.set(
                 "步骤 1 完成：已合并 PDF，并自动生成目录草稿（基于文件名+起始页码）。请进行步骤 2。"
@@ -1271,6 +1349,8 @@ class PDFWorkflowApp(tk.Tk):
         except Exception as exc:
             self.status_var.set("步骤 1 失败，请检查输入后重试。")
             messagebox.showerror("步骤 1 失败", str(exc))
+        finally:
+            self.stop_operation_progress()
 
     # -----------------------------
     # 步骤2：页码
@@ -1360,9 +1440,11 @@ class PDFWorkflowApp(tk.Tk):
             self.page_color_preview.configure(bg=color_result[1])
 
     def handle_add_page_numbers(self) -> None:
+        self.start_operation_progress("步骤 2 处理中：正在添加页码...")
         try:
             if not self.merged_pdf_path or not self.merged_pdf_path.exists():
                 raise ValueError("请先完成步骤 1 的 PDF 合并。")
+            self.set_operation_progress(18)
 
             font_size = int(self.page_font_size_var.get())
             if not 8 <= font_size <= 72:
@@ -1372,10 +1454,9 @@ class PDFWorkflowApp(tk.Tk):
             position = POSITION_OPTIONS.get(position_key)
             if not position:
                 raise ValueError("请选择有效的页码位置。")
+            self.set_operation_progress(34)
 
             numbered_path = self.runtime_dir / "02_numbered.pdf"
-            self.status_var.set("步骤 2 处理中：正在添加页码...")
-            self.update_idletasks()
 
             add_page_numbers(
                 input_pdf=self.merged_pdf_path,
@@ -1385,6 +1466,7 @@ class PDFWorkflowApp(tk.Tk):
                 position=position,
                 font_choice=self.page_font_var.get(),
             )
+            self.set_operation_progress(78)
 
             self.numbered_pdf_path = numbered_path
             self.final_uncompressed_path = None
@@ -1395,12 +1477,15 @@ class PDFWorkflowApp(tk.Tk):
             self.notebook.tab(2, state="normal")
             self.notebook.tab(3, state="disabled")
             self.notebook.select(2)
+            self.set_operation_progress(100)
 
             self.status_var.set("步骤 2 完成：已添加页码。请在步骤 3 细化目录并生成未压缩完整版。")
             messagebox.showinfo("步骤 2 完成", "页码添加成功。\n请进入步骤 3 编写目录。")
         except Exception as exc:
             self.status_var.set("步骤 2 失败，请检查输入后重试。")
             messagebox.showerror("步骤 2 失败", str(exc))
+        finally:
+            self.stop_operation_progress()
 
     # -----------------------------
     # 步骤3：目录
@@ -1419,49 +1504,12 @@ class PDFWorkflowApp(tk.Tk):
         title_group.pack(fill="x", pady=(6, 0))
 
         ttk.Label(title_group, text="目录标题", style="Label.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(title_group, textvariable=self.toc_title_var, width=24).grid(row=1, column=0, sticky="w", pady=(6, 0))
-
-        ttk.Label(title_group, text="标题字体", style="Label.TLabel").grid(row=0, column=1, sticky="w", padx=(20, 0))
-        self.toc_title_font_box = ttk.Combobox(
-            title_group,
-            textvariable=self.toc_title_font_var,
-            values=list(FONT_OPTIONS.keys()),
-            state="readonly",
-            width=26,
+        ttk.Entry(title_group, textvariable=self.toc_title_var, width=36).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(6, 0),
         )
-        self.toc_title_font_box.grid(row=1, column=1, sticky="w", padx=(20, 0), pady=(6, 0))
-
-        ttk.Label(title_group, text="标题字号", style="Label.TLabel").grid(row=0, column=2, sticky="w", padx=(20, 0))
-        self.toc_title_size_box = ttk.Spinbox(
-            title_group,
-            from_=10,
-            to=72,
-            textvariable=self.toc_title_size_var,
-            width=8,
-            justify="center",
-        )
-        self.toc_title_size_box.grid(row=1, column=2, sticky="w", padx=(20, 0), pady=(6, 0))
-
-        ttk.Label(title_group, text="目录字体", style="Label.TLabel").grid(row=0, column=3, sticky="w", padx=(20, 0))
-        self.toc_body_font_box = ttk.Combobox(
-            title_group,
-            textvariable=self.toc_body_font_var,
-            values=list(FONT_OPTIONS.keys()),
-            state="readonly",
-            width=26,
-        )
-        self.toc_body_font_box.grid(row=1, column=3, sticky="w", padx=(20, 0), pady=(6, 0))
-
-        ttk.Label(title_group, text="目录字号", style="Label.TLabel").grid(row=0, column=4, sticky="w", padx=(20, 0))
-        self.toc_body_size_box = ttk.Spinbox(
-            title_group,
-            from_=8,
-            to=48,
-            textvariable=self.toc_body_size_var,
-            width=8,
-            justify="center",
-        )
-        self.toc_body_size_box.grid(row=1, column=4, sticky="w", padx=(20, 0), pady=(6, 0))
 
         entry_card = ttk.Frame(self.toc_tab, style="Card.TFrame")
         entry_card.pack(fill="x", pady=(14, 0))
@@ -1545,13 +1593,19 @@ class PDFWorkflowApp(tk.Tk):
             self.compress_output_var.set(str(build_default_compressed_path(Path(selected))))
 
     def add_toc_entry(self) -> None:
-        item = self.toc_item_var.get().strip()
+        item = normalize_toc_item_text(self.toc_item_var.get())
         page = self.toc_page_var.get().strip()
         if not item:
             messagebox.showwarning("输入不完整", "请输入目录项内容。")
             return
         if not page:
             messagebox.showwarning("输入不完整", "请输入对应页码。")
+            return
+
+        try:
+            page = normalize_toc_page_text(page)
+        except ValueError:
+            messagebox.showwarning("页码无效", "请输入有效页码（正整数或罗马数字）。")
             return
 
         self.toc_tree.insert("", "end", values=(item, page))
@@ -1577,10 +1631,11 @@ class PDFWorkflowApp(tk.Tk):
             values = self.toc_tree.item(item_id, "values")
             if len(values) < 2:
                 continue
-            item_text = str(values[0]).strip()
+            item_text = normalize_toc_item_text(str(values[0]))
             page_text = str(values[1]).strip()
             if not item_text or not page_text:
                 raise ValueError("目录列表存在空值，请删除或补全后再生成。")
+            page_text = normalize_toc_page_text(page_text)
             entries.append((item_text, page_text))
 
         if not entries:
@@ -1588,18 +1643,18 @@ class PDFWorkflowApp(tk.Tk):
         return entries
 
     def handle_generate_toc(self) -> None:
+        self.start_operation_progress("步骤 3 处理中：正在生成目录并输出未压缩完整版...")
         try:
             if not self.numbered_pdf_path or not self.numbered_pdf_path.exists():
                 raise ValueError("请先完成步骤 2 添加页码。")
+            self.set_operation_progress(16)
 
-            title_size = int(self.toc_title_size_var.get())
-            body_size = int(self.toc_body_size_var.get())
-            if not 10 <= title_size <= 72:
-                raise ValueError("标题字号需在 10 到 72 之间。")
-            if not 8 <= body_size <= 48:
-                raise ValueError("目录字号需在 8 到 48 之间。")
+            title_text = normalize_toc_item_text(self.toc_title_var.get())
+            if not title_text:
+                raise ValueError("请输入目录标题。")
 
             entries = self.collect_toc_entries()
+            self.set_operation_progress(32)
             output_text = self.toc_output_var.get().strip()
             if not output_text:
                 if not self.reference_pdf:
@@ -1609,26 +1664,26 @@ class PDFWorkflowApp(tk.Tk):
 
             output_pdf = normalize_path(output_text)
             output_pdf.parent.mkdir(parents=True, exist_ok=True)
-
-            self.status_var.set("步骤 3 处理中：正在生成目录并输出未压缩完整版...")
-            self.update_idletasks()
+            self.set_operation_progress(46)
 
             final_uncompressed = prepend_toc_pages(
                 numbered_pdf=self.numbered_pdf_path,
                 entries=entries,
-                title=self.toc_title_var.get().strip() or "目录",
+                title=title_text,
                 output_pdf=output_pdf,
-                title_font_choice=self.toc_title_font_var.get(),
-                title_font_size=title_size,
-                body_font_choice=self.toc_body_font_var.get(),
-                body_font_size=body_size,
+                title_font_choice=STANDARD_TOC_TITLE_FONT,
+                title_font_size=STANDARD_TOC_TITLE_SIZE,
+                body_font_choice=STANDARD_TOC_BODY_FONT_ZH,
+                body_font_size=STANDARD_TOC_BODY_SIZE,
             )
+            self.set_operation_progress(86)
 
             self.final_uncompressed_path = final_uncompressed
             self.compress_source_var.set(str(final_uncompressed))
             self.compress_output_var.set(str(build_default_compressed_path(final_uncompressed)))
             self.notebook.tab(3, state="normal")
             self.notebook.select(3)
+            self.set_operation_progress(100)
 
             self.status_var.set("步骤 3 完成：未压缩完整版已输出，并已写入目录书签。请进行步骤 4 压缩。")
             messagebox.showinfo(
@@ -1638,6 +1693,8 @@ class PDFWorkflowApp(tk.Tk):
         except Exception as exc:
             self.status_var.set("步骤 3 失败，请检查输入后重试。")
             messagebox.showerror("步骤 3 失败", str(exc))
+        finally:
+            self.stop_operation_progress()
 
     # -----------------------------
     # 步骤4：压缩
@@ -1693,6 +1750,14 @@ class PDFWorkflowApp(tk.Tk):
         action_row.pack(fill="x", pady=(14, 0))
         action_row.pack_propagate(False)
 
+        self.export_uncompressed_button = self.create_action_button(
+            action_row,
+            text="不压缩导出",
+            command=self.handle_export_uncompressed,
+            width=14,
+        )
+        self.export_uncompressed_button.pack(side="left", pady=8)
+
         self.compress_execute_button = self.create_action_button(
             action_row,
             text="压缩并输出最终文件",
@@ -1717,10 +1782,44 @@ class PDFWorkflowApp(tk.Tk):
         if selected:
             self.compress_output_var.set(selected)
 
-    def handle_compress_pdf(self) -> None:
+    def handle_export_uncompressed(self) -> None:
+        selected = filedialog.asksaveasfilename(
+            title="选择不压缩导出路径",
+            defaultextension=".pdf",
+            initialfile="完整文档_不压缩导出.pdf",
+            filetypes=[("PDF 文件", "*.pdf")],
+        )
+        if not selected:
+            return
+
+        self.start_operation_progress("步骤 4 处理中：正在导出不压缩 PDF...")
         try:
             if not self.final_uncompressed_path or not self.final_uncompressed_path.exists():
                 raise ValueError("请先完成步骤 3，生成未压缩完整版。")
+            self.set_operation_progress(24)
+
+            export_path = normalize_path(selected)
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            self.set_operation_progress(54)
+
+            if self.final_uncompressed_path.resolve() != export_path.resolve():
+                shutil.copyfile(self.final_uncompressed_path, export_path)
+            self.set_operation_progress(100)
+
+            self.status_var.set("步骤 4 完成：不压缩文件已导出。")
+            messagebox.showinfo("导出完成", f"不压缩文件已导出：\n{export_path}")
+        except Exception as exc:
+            self.status_var.set("步骤 4 失败，请检查输入后重试。")
+            messagebox.showerror("导出失败", str(exc))
+        finally:
+            self.stop_operation_progress()
+
+    def handle_compress_pdf(self) -> None:
+        self.start_operation_progress("步骤 4 处理中：正在压缩 PDF...")
+        try:
+            if not self.final_uncompressed_path or not self.final_uncompressed_path.exists():
+                raise ValueError("请先完成步骤 3，生成未压缩完整版。")
+            self.set_operation_progress(14)
 
             target_mb = float(self.target_size_mb_var.get().strip())
             if target_mb <= 0:
@@ -1728,6 +1827,7 @@ class PDFWorkflowApp(tk.Tk):
             tolerance_percent = float(self.compress_tolerance_percent_var.get().strip())
             if tolerance_percent < 0 or tolerance_percent > 100:
                 raise ValueError("允许超出比例需在 0 到 100 之间。")
+            self.set_operation_progress(28)
 
             output_text = self.compress_output_var.get().strip()
             if not output_text:
@@ -1736,9 +1836,7 @@ class PDFWorkflowApp(tk.Tk):
 
             output_pdf = normalize_path(output_text)
             output_pdf.parent.mkdir(parents=True, exist_ok=True)
-
-            self.status_var.set("步骤 4 处理中：正在压缩 PDF...")
-            self.update_idletasks()
+            self.set_operation_progress(44)
 
             result = compress_pdf_to_target(
                 input_pdf=self.final_uncompressed_path,
@@ -1747,6 +1845,7 @@ class PDFWorkflowApp(tk.Tk):
                 work_dir=self.runtime_dir,
                 tolerance_percent=tolerance_percent,
             )
+            self.set_operation_progress(90)
 
             self.final_compressed_path = output_pdf
             self.status_var.set(
@@ -1768,10 +1867,13 @@ class PDFWorkflowApp(tk.Tk):
             elif not result["strict_target_met"]:
                 message += "\n\n提示：结果略高于目标值，但在允许范围内，可保留更多清晰度。"
 
+            self.set_operation_progress(100)
             messagebox.showinfo("步骤 4 完成", message)
         except Exception as exc:
             self.status_var.set("步骤 4 失败，请检查输入后重试。")
             messagebox.showerror("步骤 4 失败", str(exc))
+        finally:
+            self.stop_operation_progress()
 
     def handle_close(self) -> None:
         try:
