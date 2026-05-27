@@ -436,6 +436,35 @@ def resolve_text_point(
     return pymupdf.Point(x, y)
 
 
+def draw_page_number_cover(
+    page: Any,
+    text: str,
+    insert_point: pymupdf.Point,
+    font_size: int,
+    position: str,
+    font_name: str,
+    margin: int = 40,
+) -> None:
+    text_width = measure_text_width(text, font_size, font_name)
+    horizontal_padding = max(1.5, font_size * 0.08)
+    vertical_padding = max(1.0, font_size * 0.06)
+    baseline_x = float(insert_point.x)
+    baseline_y = float(insert_point.y)
+
+    left = baseline_x - horizontal_padding
+    right = baseline_x + text_width + horizontal_padding
+    top = baseline_y - font_size - vertical_padding
+    bottom = baseline_y + vertical_padding
+    cover_rect = pymupdf.Rect(
+        max(0.0, left),
+        max(0.0, top),
+        min(float(page.rect.width), right),
+        min(float(page.rect.height), bottom),
+    )
+
+    page.draw_rect(cover_rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
+
+
 def merge_pdfs(pdf_paths: Sequence[Path], output_path: Path) -> Path:
     if not pdf_paths:
         raise ValueError("请至少选择一个 PDF 文件用于合并。")
@@ -483,6 +512,7 @@ def add_page_numbers(
 
             text = str(page_index + 1)
             insert_point = resolve_text_point(page, text, font_size, position, font_name)
+            draw_page_number_cover(page, text, insert_point, font_size, position, font_name)
             page.insert_text(
                 insert_point,
                 text,
@@ -977,6 +1007,83 @@ class PDFWorkflowApp(tk.Tk):
     def stop_operation_progress(self) -> None:
         self.set_operation_progress(0.0)
 
+    def remove_runtime_file(self, path: Optional[Path]) -> None:
+        if path is None or not path.exists():
+            return
+
+        try:
+            resolved_path = path.resolve()
+            resolved_runtime = self.runtime_dir.resolve()
+        except OSError:
+            return
+
+        if resolved_path == resolved_runtime or resolved_runtime not in resolved_path.parents:
+            return
+
+        try:
+            if resolved_path.is_file():
+                resolved_path.unlink()
+        except OSError:
+            pass
+
+    def reset_outputs_after_merge(self) -> None:
+        self.remove_runtime_file(self.merged_pdf_path)
+        self.remove_runtime_file(self.numbered_pdf_path)
+        self.reference_pdf = None
+        self.merged_pdf_path = None
+        self.numbered_pdf_path = None
+        self.final_uncompressed_path = None
+        self.final_compressed_path = None
+        self.auto_toc_entries = []
+        self.number_source_var.set("")
+        self.toc_source_var.set("")
+        self.compress_source_var.set("")
+        self.toc_output_var.set("")
+        self.compress_output_var.set("")
+        self.clear_toc_entries()
+
+    def reset_outputs_after_numbering(self) -> None:
+        self.remove_runtime_file(self.numbered_pdf_path)
+        self.numbered_pdf_path = None
+        self.final_uncompressed_path = None
+        self.final_compressed_path = None
+        self.toc_source_var.set("")
+        self.compress_source_var.set("")
+
+    def reset_outputs_after_toc(self) -> None:
+        self.final_uncompressed_path = None
+        self.final_compressed_path = None
+        self.compress_source_var.set("")
+
+    def go_back_to_merge_step(self) -> None:
+        self.reset_outputs_after_merge()
+        self.notebook.select(0)
+        self.notebook.tab(1, state="disabled")
+        self.notebook.tab(2, state="disabled")
+        self.notebook.tab(3, state="disabled")
+        self.status_var.set("已撤销合并结果，请在步骤 1 重新合并 PDF。")
+
+    def go_back_to_number_step(self) -> None:
+        if not self.merged_pdf_path or not self.merged_pdf_path.exists():
+            self.go_back_to_merge_step()
+            return
+
+        self.reset_outputs_after_numbering()
+        self.notebook.select(1)
+        self.notebook.tab(2, state="disabled")
+        self.notebook.tab(3, state="disabled")
+        self.status_var.set("已撤销页码添加结果，请在步骤 2 重新添加页码。")
+
+    def go_back_to_toc_step(self) -> None:
+        if not self.numbered_pdf_path or not self.numbered_pdf_path.exists():
+            self.go_back_to_number_step()
+            return
+
+        self.reset_outputs_after_toc()
+        self.notebook.select(2)
+        self.notebook.tab(3, state="disabled")
+        self.status_var.set("已撤销目录生成状态，请在步骤 3 重新生成未压缩完整版。")
+
     def create_action_button(
         self,
         parent,
@@ -1424,6 +1531,14 @@ class PDFWorkflowApp(tk.Tk):
         action_row.pack(fill="x", pady=(14, 0))
         action_row.pack_propagate(False)
 
+        self.number_previous_button = self.create_action_button(
+            action_row,
+            text="上一步",
+            command=self.go_back_to_merge_step,
+            width=12,
+        )
+        self.number_previous_button.pack(side="left", pady=8)
+
         self.number_execute_button = self.create_action_button(
             action_row,
             text="添加页码并进入下一步",
@@ -1552,6 +1667,14 @@ class PDFWorkflowApp(tk.Tk):
         action_row.pack(fill="x", pady=(12, 0))
         action_row.pack_propagate(False)
 
+        self.toc_previous_button = self.create_action_button(
+            action_row,
+            text="上一步",
+            command=self.go_back_to_number_step,
+            width=12,
+        )
+        self.toc_previous_button.pack(side="left", padx=(0, 8), pady=8)
+
         self.remove_toc_button = self.create_action_button(
             action_row,
             text="删除选中项",
@@ -1559,6 +1682,22 @@ class PDFWorkflowApp(tk.Tk):
             width=12,
         )
         self.remove_toc_button.pack(side="left", padx=(0, 8), pady=8)
+
+        self.move_toc_up_button = self.create_action_button(
+            action_row,
+            text="↑",
+            command=self.move_selected_toc_entry_up,
+            width=4,
+        )
+        self.move_toc_up_button.pack(side="left", padx=(0, 8), pady=8)
+
+        self.move_toc_down_button = self.create_action_button(
+            action_row,
+            text="↓",
+            command=self.move_selected_toc_entry_down,
+            width=4,
+        )
+        self.move_toc_down_button.pack(side="left", padx=(0, 8), pady=8)
 
         self.clear_toc_button = self.create_action_button(
             action_row,
@@ -1615,6 +1754,46 @@ class PDFWorkflowApp(tk.Tk):
     def remove_selected_toc_entry(self) -> None:
         for item_id in self.toc_tree.selection():
             self.toc_tree.delete(item_id)
+
+    def move_selected_toc_entry_up(self) -> None:
+        self.move_selected_toc_entry(-1)
+
+    def move_selected_toc_entry_down(self) -> None:
+        self.move_selected_toc_entry(1)
+
+    def move_selected_toc_entry(self, direction: int) -> None:
+        selected_items = list(self.toc_tree.selection())
+        if not selected_items:
+            messagebox.showwarning("未选择目录项", "请先选择要调整顺序的目录项。")
+            return
+
+        children = list(self.toc_tree.get_children())
+        selected_set = set(selected_items)
+        selected_in_tree_order = [item_id for item_id in children if item_id in selected_set]
+
+        if direction < 0:
+            ordered_items = selected_in_tree_order
+            boundary_index = 0
+        else:
+            ordered_items = list(reversed(selected_in_tree_order))
+            boundary_index = len(children) - 1
+
+        for item_id in ordered_items:
+            current_index = self.toc_tree.index(item_id)
+            if current_index == boundary_index:
+                continue
+
+            target_index = current_index + direction
+            neighbor_id = children[target_index]
+            if neighbor_id in selected_set:
+                continue
+
+            self.toc_tree.move(item_id, "", target_index)
+            children = list(self.toc_tree.get_children())
+
+        self.toc_tree.selection_set(selected_items)
+        self.toc_tree.focus(selected_items[0])
+        self.toc_tree.see(selected_items[0])
 
     def clear_toc_entries(self) -> None:
         for item_id in self.toc_tree.get_children():
@@ -1749,6 +1928,14 @@ class PDFWorkflowApp(tk.Tk):
         action_row = ttk.Frame(self.compress_tab, style="Card.TFrame", height=56)
         action_row.pack(fill="x", pady=(14, 0))
         action_row.pack_propagate(False)
+
+        self.compress_previous_button = self.create_action_button(
+            action_row,
+            text="上一步",
+            command=self.go_back_to_toc_step,
+            width=12,
+        )
+        self.compress_previous_button.pack(side="left", padx=(0, 8), pady=8)
 
         self.export_uncompressed_button = self.create_action_button(
             action_row,
